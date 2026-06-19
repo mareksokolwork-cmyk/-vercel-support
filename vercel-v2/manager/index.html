@@ -1,0 +1,292 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Панель менеджера — Техподдержка</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      background: #0f172a; color: #e2e8f0;
+      min-height: 100vh; display: flex; flex-direction: column;
+    }
+    header {
+      background: #1e293b; border-bottom: 1px solid #334155;
+      padding: 14px 24px; display: flex; align-items: center; gap: 12px; flex-shrink: 0;
+    }
+    header h1 { font-size: 17px; font-weight: 700; color: #f1f5f9; }
+    .ws-indicator { margin-left: auto; display: flex; align-items: center; gap: 8px; font-size: 13px; color: #94a3b8; }
+    .dot { width: 9px; height: 9px; border-radius: 50%; background: #64748b; transition: background 0.3s; }
+    .dot.online  { background: #22c55e; box-shadow: 0 0 6px #22c55e; }
+    .dot.offline { background: #ef4444; }
+    .layout { display: flex; flex: 1; overflow: hidden; }
+    aside {
+      width: 260px; background: #1e293b; border-right: 1px solid #334155;
+      display: flex; flex-direction: column; flex-shrink: 0;
+    }
+    aside h2 {
+      padding: 16px 18px 12px; font-size: 13px; font-weight: 600;
+      text-transform: uppercase; letter-spacing: 0.05em; color: #64748b;
+    }
+    #sessionList { flex: 1; overflow-y: auto; padding: 0 10px 10px; }
+    .session-card {
+      background: #0f172a; border: 1px solid #334155; border-radius: 10px;
+      padding: 12px 14px; margin-bottom: 8px; cursor: pointer;
+      transition: border-color 0.2s, background 0.2s;
+    }
+    .session-card:hover { border-color: #3b82f6; background: #1e3a5f; }
+    .session-card.active { border-color: #3b82f6; background: #1e3a5f; }
+    .session-card .sid { font-size: 11px; color: #94a3b8; font-family: monospace; word-break: break-all; margin-bottom: 8px; }
+    .session-card .btn-accept {
+      background: #3b82f6; color: #fff; border: none; border-radius: 7px;
+      padding: 7px 14px; font-size: 13px; font-weight: 600;
+      cursor: pointer; width: 100%; transition: background 0.2s;
+    }
+    .session-card .btn-accept:hover { background: #2563eb; }
+    .session-card .btn-accept.connected { background: #16a34a; cursor: default; }
+    .empty-state { padding: 24px 18px; text-align: center; color: #475569; font-size: 14px; line-height: 1.6; }
+    main {
+      flex: 1; display: flex; flex-direction: column;
+      align-items: center; justify-content: center; padding: 24px; overflow: hidden;
+    }
+    #videoWrap {
+      position: relative; width: 100%; max-width: 900px;
+      background: #1e293b; border-radius: 16px; border: 1px solid #334155;
+      overflow: hidden; aspect-ratio: 16/9; display: flex;
+      align-items: center; justify-content: center;
+    }
+    #remoteVideo { width: 100%; height: 100%; object-fit: contain; display: none; }
+    .video-placeholder { text-align: center; color: #475569; }
+    .video-placeholder .big-icon { font-size: 64px; margin-bottom: 16px; }
+    .video-placeholder p { font-size: 16px; line-height: 1.6; }
+    .video-label {
+      position: absolute; top: 12px; left: 12px;
+      background: rgba(0,0,0,0.6); color: #fff;
+      padding: 5px 12px; border-radius: 20px; font-size: 12px; font-weight: 600; display: none;
+    }
+    .video-label.visible { display: block; }
+    #statusBar { margin-top: 16px; font-size: 14px; color: #64748b; text-align: center; min-height: 20px; }
+    .status-dot {
+      display: inline-block; width: 8px; height: 8px; border-radius: 50%;
+      background: currentColor; margin-right: 6px; animation: pulse 1.4s ease-in-out infinite;
+    }
+    @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.25; } }
+  </style>
+</head>
+<body>
+<header>
+  <span style="font-size:22px">🖥️</span>
+  <h1>Панель технического менеджера</h1>
+  <div class="ws-indicator">
+    <div class="dot" id="wsDot"></div>
+    <span id="wsLabel">Подключение…</span>
+  </div>
+</header>
+
+<div class="layout">
+  <aside>
+    <h2>Очередь сессий</h2>
+    <div id="sessionList">
+      <div class="empty-state" id="emptyState">
+        Ожидаем клиентов…<br>
+        Когда клиент нажмёт кнопку, здесь появится карточка.
+      </div>
+    </div>
+  </aside>
+
+  <main>
+    <div id="videoWrap">
+      <video id="remoteVideo" autoplay playsinline></video>
+      <div class="video-label" id="videoLabel">● LIVE</div>
+      <div class="video-placeholder" id="placeholder">
+        <div class="big-icon">📺</div>
+        <p>Выберите сессию слева<br>чтобы увидеть экран клиента</p>
+      </div>
+    </div>
+    <div id="statusBar"></div>
+  </main>
+</div>
+
+<script src="https://js.pusher.com/8.2.0/pusher.min.js"></script>
+<script>
+const PUSHER_KEY     = "b5ac6b29dac2f1084e87";
+const PUSHER_CLUSTER = "us2";
+const SIGNAL_URL     = "/api/signal";
+
+const ICE_SERVERS = [
+  { urls: "stun:stun.l.google.com:19302" },
+  { urls: "stun:stun1.l.google.com:19302" },
+  {
+    urls: [
+      "turn:openrelay.metered.ca:80",
+      "turn:openrelay.metered.ca:443",
+      "turn:openrelay.metered.ca:443?transport=tcp"
+    ],
+    username: "openrelayproject",
+    credential: "openrelayproject"
+  }
+];
+
+const wsDot       = document.getElementById("wsDot");
+const wsLabel     = document.getElementById("wsLabel");
+const sessionList = document.getElementById("sessionList");
+const emptyState  = document.getElementById("emptyState");
+const remoteVideo = document.getElementById("remoteVideo");
+const placeholder = document.getElementById("placeholder");
+const videoLabel  = document.getElementById("videoLabel");
+const statusBar   = document.getElementById("statusBar");
+
+let pc = null;
+let activeSessionId = null;
+const cards = {};
+
+async function signal(data) {
+  await fetch(SIGNAL_URL, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(data),
+  });
+}
+
+// Подключаемся к Pusher
+const pusher = new Pusher(PUSHER_KEY, { cluster: PUSHER_CLUSTER });
+
+// Канал для менеджеров — получаем новые сессии и offer/ICE
+const managersChannel = pusher.subscribe("managers");
+
+managersChannel.bind("pusher:subscription_succeeded", () => {
+  wsDot.className = "dot online";
+  wsLabel.textContent = "Подключён";
+});
+
+pusher.connection.bind("disconnected", () => {
+  wsDot.className = "dot offline";
+  wsLabel.textContent = "Нет соединения";
+});
+
+pusher.connection.bind("connected", () => {
+  wsDot.className = "dot online";
+  wsLabel.textContent = "Подключён";
+});
+
+// Новая сессия от клиента
+managersChannel.bind("new-session", (data) => {
+  addSessionCard(data.sessionId);
+});
+
+// Сессия завершена
+managersChannel.bind("session-ended", (data) => {
+  removeSessionCard(data.sessionId);
+  if (data.sessionId === activeSessionId) {
+    setStatus("Клиент отключился.", "#ef4444");
+    stopVideo();
+  }
+});
+
+// SDP offer от клиента
+managersChannel.bind("offer", async (data) => {
+  if (data.sessionId !== activeSessionId) return;
+  await handleOffer(data.sdp, data.sessionId);
+});
+
+// ICE-кандидат от клиента
+managersChannel.bind("ice-candidate", async (data) => {
+  if (data.from !== "client") return;
+  if (data.sessionId !== activeSessionId) return;
+  if (pc && data.candidate) {
+    try { await pc.addIceCandidate(new RTCIceCandidate(data.candidate)); } catch {}
+  }
+});
+
+// ── Карточки сессий ──────────────────────────────────────────────────────────
+function addSessionCard(sessionId) {
+  if (cards[sessionId]) return;
+  emptyState.style.display = "none";
+
+  const card = document.createElement("div");
+  card.className = "session-card";
+  card.innerHTML = `
+    <div class="sid">${sessionId}</div>
+    <button class="btn-accept" data-id="${sessionId}">Принять</button>
+  `;
+  card.querySelector(".btn-accept").addEventListener("click", () => joinSession(sessionId));
+  sessionList.appendChild(card);
+  cards[sessionId] = card;
+}
+
+function removeSessionCard(sessionId) {
+  if (cards[sessionId]) { cards[sessionId].remove(); delete cards[sessionId]; }
+  if (Object.keys(cards).length === 0) emptyState.style.display = "";
+}
+
+function markCardActive(sessionId) {
+  Object.values(cards).forEach((c) => c.classList.remove("active"));
+  if (cards[sessionId]) {
+    cards[sessionId].classList.add("active");
+    const btn = cards[sessionId].querySelector(".btn-accept");
+    btn.textContent = "Подключён";
+    btn.className = "btn-accept connected";
+    btn.disabled = true;
+  }
+}
+
+// ── Принять сессию ───────────────────────────────────────────────────────────
+async function joinSession(sessionId) {
+  if (activeSessionId === sessionId) return;
+  if (pc) { pc.close(); pc = null; }
+  stopVideo();
+
+  activeSessionId = sessionId;
+  markCardActive(sessionId);
+  setStatus("Подключаемся к клиенту…", "#64748b");
+
+  await signal({ type: "join-session", sessionId });
+}
+
+// ── Обработка offer ──────────────────────────────────────────────────────────
+async function handleOffer(sdp, sessionId) {
+  pc = new RTCPeerConnection({ iceServers: ICE_SERVERS });
+
+  pc.addEventListener("track", (event) => {
+    remoteVideo.srcObject = event.streams[0];
+    remoteVideo.style.display = "block";
+    placeholder.style.display = "none";
+    videoLabel.classList.add("visible");
+    setStatus("🟢 Трансляция активна", "#22c55e");
+  });
+
+  pc.addEventListener("icecandidate", (e) => {
+    if (e.candidate) {
+      signal({ type: "ice-candidate", sessionId, candidate: e.candidate, from: "manager" });
+    }
+  });
+
+  pc.addEventListener("connectionstatechange", () => {
+    if (pc.connectionState === "failed" || pc.connectionState === "disconnected") {
+      setStatus("Видеосвязь прервана", "#ef4444");
+      stopVideo();
+    }
+  });
+
+  await pc.setRemoteDescription(new RTCSessionDescription(sdp));
+  const answer = await pc.createAnswer();
+  await pc.setLocalDescription(answer);
+  await signal({ type: "answer", sessionId, sdp: pc.localDescription });
+}
+
+function stopVideo() {
+  remoteVideo.srcObject = null;
+  remoteVideo.style.display = "none";
+  placeholder.style.display = "";
+  videoLabel.classList.remove("visible");
+  activeSessionId = null;
+}
+
+function setStatus(text, color = "#64748b") {
+  statusBar.style.color = color;
+  statusBar.innerHTML = `<span class="status-dot"></span>${text}`;
+}
+</script>
+</body>
+</html>
