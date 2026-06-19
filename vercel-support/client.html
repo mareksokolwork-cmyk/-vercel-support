@@ -1,0 +1,232 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Техническая поддержка</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      background: #f0f4f8;
+      min-height: 100vh;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 24px;
+    }
+    .card {
+      background: #fff;
+      border-radius: 20px;
+      box-shadow: 0 4px 32px rgba(0,0,0,0.10);
+      padding: 40px 32px;
+      max-width: 420px;
+      width: 100%;
+      text-align: center;
+    }
+    .icon { font-size: 56px; margin-bottom: 16px; }
+    h1 { font-size: 22px; font-weight: 700; color: #1a202c; margin-bottom: 10px; }
+    .subtitle { font-size: 15px; color: #718096; line-height: 1.6; margin-bottom: 32px; }
+    .btn {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: 10px;
+      background: #3b82f6;
+      color: #fff;
+      border: none;
+      border-radius: 14px;
+      padding: 16px 32px;
+      font-size: 17px;
+      font-weight: 600;
+      cursor: pointer;
+      width: 100%;
+      transition: background 0.2s, transform 0.1s;
+      touch-action: manipulation;
+    }
+    .btn:hover:not(:disabled) { background: #2563eb; }
+    .btn:active:not(:disabled) { transform: scale(0.98); }
+    .btn:disabled { background: #a0aec0; cursor: default; }
+    .btn-stop { background: #ef4444; margin-top: 12px; }
+    .btn-stop:hover:not(:disabled) { background: #dc2626; }
+    .status {
+      margin-top: 24px;
+      padding: 14px 18px;
+      border-radius: 12px;
+      font-size: 14px;
+      font-weight: 500;
+      display: none;
+    }
+    .status.info    { background: #ebf8ff; color: #2b6cb0; display: block; }
+    .status.success { background: #f0fff4; color: #276749; display: block; }
+    .status.error   { background: #fff5f5; color: #c53030; display: block; }
+    .status.warning { background: #fffbeb; color: #92400e; display: block; }
+    .pulse {
+      display: inline-block; width: 10px; height: 10px;
+      border-radius: 50%; background: currentColor;
+      margin-right: 6px; animation: pulse 1.4s ease-in-out infinite;
+    }
+    @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.3; } }
+    .note { margin-top: 24px; font-size: 13px; color: #a0aec0; line-height: 1.6; }
+  </style>
+</head>
+<body>
+<div class="card">
+  <div class="icon">📱</div>
+  <h1>Вызов технического менеджера</h1>
+  <p class="subtitle">
+    Нажмите кнопку ниже — менеджер увидит ваш экран<br>
+    и по телефону подскажет, что делать.
+  </p>
+  <button class="btn" id="btnStart">📞 Начать сеанс поддержки</button>
+  <button class="btn btn-stop" id="btnStop" style="display:none">✕ Завершить сеанс</button>
+  <div class="status" id="status"></div>
+  <p class="note">
+    После нажатия появится системный запрос «Начать трансляцию?» — нажмите «Разрешить».
+    Голосовая связь идёт через отдельный звонок менеджера на ваш телефон.
+  </p>
+</div>
+
+<!-- Pusher JS SDK -->
+<script src="https://js.pusher.com/8.2.0/pusher.min.js"></script>
+<script>
+const PUSHER_KEY     = "b5ac6b29dac2f1084e87";
+const PUSHER_CLUSTER = "us2";
+const SIGNAL_URL     = "/api/signal";
+
+const ICE_SERVERS = [
+  { urls: "stun:stun.l.google.com:19302" },
+  { urls: "stun:stun1.l.google.com:19302" },
+  {
+    urls: [
+      "turn:openrelay.metered.ca:80",
+      "turn:openrelay.metered.ca:443",
+      "turn:openrelay.metered.ca:443?transport=tcp"
+    ],
+    username: "openrelayproject",
+    credential: "openrelayproject"
+  }
+];
+
+const sessionId = crypto.randomUUID();
+let pusher = null;
+let channel = null;
+let pc = null;
+let stream = null;
+
+const btnStart = document.getElementById("btnStart");
+const btnStop  = document.getElementById("btnStop");
+const statusEl = document.getElementById("status");
+
+function setStatus(text, type = "info") {
+  statusEl.className = `status ${type}`;
+  statusEl.innerHTML = (type === "info" || type === "success")
+    ? `<span class="pulse"></span>${text}` : text;
+}
+
+function setIdle() {
+  btnStart.disabled = false;
+  btnStop.style.display = "none";
+  btnStart.style.display = "inline-flex";
+}
+
+function setActive() {
+  btnStart.style.display = "none";
+  btnStop.style.display = "inline-flex";
+}
+
+async function signal(data) {
+  await fetch(SIGNAL_URL, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(data),
+  });
+}
+
+btnStart.addEventListener("click", async () => {
+  btnStart.disabled = true;
+  setStatus("Запрашиваем разрешение на трансляцию экрана…");
+
+  try {
+    stream = await navigator.mediaDevices.getDisplayMedia({ video: true, audio: false });
+  } catch {
+    setStatus("Разрешение на трансляцию не получено. Попробуйте ещё раз.", "error");
+    setIdle();
+    return;
+  }
+
+  setStatus("Подключаемся…");
+  setActive();
+
+  // Подписываемся на канал сессии через Pusher
+  pusher = new Pusher(PUSHER_KEY, { cluster: PUSHER_CLUSTER });
+  channel = pusher.subscribe(`session-${sessionId}`);
+
+  channel.bind("manager-joined", async () => {
+    setStatus("Менеджер подключился, устанавливаем видеосвязь…");
+    await createOffer();
+  });
+
+  channel.bind("answer", async (data) => {
+    await pc.setRemoteDescription(new RTCSessionDescription(data.sdp));
+    setStatus("Трансляция активна", "success");
+  });
+
+  channel.bind("ice-candidate", async (data) => {
+    if (data.from === "manager" && data.candidate) {
+      try { await pc.addIceCandidate(new RTCIceCandidate(data.candidate)); } catch {}
+    }
+  });
+
+  // Регистрируем сессию
+  await signal({ type: "register-client", sessionId });
+  setStatus("Ожидаем подключения менеджера…");
+
+  stream.getVideoTracks()[0].addEventListener("ended", () => {
+    setStatus("Трансляция экрана остановлена.", "warning");
+    cleanup(false);
+  });
+});
+
+async function createOffer() {
+  pc = new RTCPeerConnection({ iceServers: ICE_SERVERS });
+  stream.getTracks().forEach((t) => pc.addTrack(t, stream));
+
+  pc.addEventListener("icecandidate", (e) => {
+    if (e.candidate) {
+      signal({ type: "ice-candidate", sessionId, candidate: e.candidate, from: "client" });
+    }
+  });
+
+  pc.addEventListener("connectionstatechange", () => {
+    if (pc.connectionState === "connected") {
+      setStatus("🟢 Менеджер видит ваш экран", "success");
+    }
+    if (pc.connectionState === "failed" || pc.connectionState === "disconnected") {
+      setStatus("Видеосвязь прервана. Нажмите кнопку снова.", "warning");
+      cleanup(false);
+    }
+  });
+
+  const offer = await pc.createOffer();
+  await pc.setLocalDescription(offer);
+  await signal({ type: "offer", sessionId, sdp: pc.localDescription });
+}
+
+btnStop.addEventListener("click", () => {
+  signal({ type: "client-disconnected", sessionId });
+  setStatus("Сеанс завершён.");
+  cleanup(true);
+});
+
+function cleanup(showIdle = true) {
+  if (stream) { stream.getTracks().forEach((t) => t.stop()); stream = null; }
+  if (pc) { pc.close(); pc = null; }
+  if (channel) { channel.unbind_all(); channel = null; }
+  if (pusher) { pusher.disconnect(); pusher = null; }
+  if (showIdle) setIdle();
+  else { btnStop.style.display = "none"; btnStart.style.display = "inline-flex"; btnStart.disabled = false; }
+}
+</script>
+</body>
+</html>
